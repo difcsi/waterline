@@ -128,3 +128,6 @@ dmypy.json
 
 test_workspace
 /ws/
+
+suites/SPEC2017
+*.pyc
