@@ -2,7 +2,8 @@ from setuptools import find_packages, setup
 
 setup(
     name="waterline",
-    packages=find_packages(),
+    packages=["waterline", "waterline.suites"],
+    package_dir={"waterline": ".", "waterline.suites": "suites"},
     version="0.2.0",
     description="A unified LLVM benchmark pipeliner",
     author="Nick Wanninger",
