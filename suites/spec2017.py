@@ -13,7 +13,10 @@ class SpecBenchmark(Benchmark):
     def compile(self, output: Path):
         # Run SPEC compilation
         try:
-            self.suite.run_support_script("compile", self.name, self.suite.config)
+            self.suite.run_support_command(
+                f"cd spec-cpu2017 && . ./shrc && runcpu --config=gclang "
+                f"--action=build --tune=peak {self.name}"
+            )
         except Exception as e:
             raise RuntimeError(
                 f"Failed to compile SPEC2017 benchmark {self.name}: {e}\n"
@@ -23,13 +26,13 @@ class SpecBenchmark(Benchmark):
         # Check for the binary in the expected location
         src_binary = (
             self.suite.src
-            / f"SPEC2017/benchspec/CPU/{self.name}/build/build_peak_gclang.0000/"
+            / f"spec-cpu2017/benchspec/CPU/{self.name}/build/build_peak_gclang.0000/"
             / self.bin
         )
         
         if not src_binary.exists():
             # Provide helpful error message
-            build_dir = self.suite.src / f"SPEC2017/benchspec/CPU/{self.name}/build"
+            build_dir = self.suite.src / f"spec-cpu2017/benchspec/CPU/{self.name}/build"
             available_builds = list(build_dir.glob("build_*")) if build_dir.exists() else []
             
             error_msg = (
@@ -54,7 +57,7 @@ class SpecBenchmark(Benchmark):
 
         rundir = (
             self.suite.src
-            / f"SPEC2017/benchspec/CPU/{self.name}/run/run_peak_{config}_gclang.0000/"
+            / f"spec-cpu2017/benchspec/CPU/{self.name}/run/run_peak_{config}_gclang.0000/"
         )
         with open(rundir / "speccmds.cmd") as f:
             for line in f:
@@ -106,18 +109,13 @@ class SPEC2017(Suite):
             self.add_benchmark(SpecBenchmark, a, b)
 
     def acquire(self):
-        # the path to the SPEC2017 support folder
-        support = Path(__file__).parent / "SPEC2017"
-        shutil.copytree(support, self.src)
+        os.makedirs(self.src, exist_ok=True)
         shutil.unpack_archive(self.tarball, self.src, format="gztar")
 
         self.run_support_command(
-            "chmod +x -R SPEC2017/bin SPEC2017/tools SPEC2017/*.sh"
+            "chmod +x -R spec-cpu2017/bin spec-cpu2017/tools spec-cpu2017/*.sh"
         )
-        self.run_support_script("install")
+        self.run_support_command("cd spec-cpu2017 && ./install.sh -f")
 
     def run_support_command(self, command):
         self.workspace.shell("sh", "-c", f"cd {self.src}; {command}")
-
-    def run_support_script(self, name, *args):
-        self.run_support_command(f'scripts/{name}.sh {" ".join(args)}')
