@@ -73,7 +73,7 @@ class NAS(Suite):
             else:
                 cfg.write(f"CFLAGS = {' '.join(baseline_flags)} -fPIC\n")
             cfg.write("CLINKFLAGS = -fPIC -lm -fopenmp\n")
-            cfg.write("UCC = cc -O\n")
+            cfg.write("UCC = cc -O -std=gnu89\n")
             cfg.write("BINDIR	= ../bin\n")
             cfg.write("RAND	= randdp\n")
             cfg.write("WTIME	= wtime.c\n")
