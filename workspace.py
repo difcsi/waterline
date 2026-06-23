@@ -8,6 +8,8 @@ from .run import Runner
 
 import time
 import os
+import sys
+import threading
 
 from rich.progress import (
     Progress,
@@ -18,6 +20,31 @@ from rich.progress import (
 )
 
 import pandas as pd
+
+
+def _start_early_exit_watcher(stop_requested):
+    """Watch stdin on a daemon thread and set `stop_requested` on Ctrl-D / 'q'.
+
+    Only listens when stdin is an interactive terminal: a piped or closed stdin
+    reads EOF immediately, which would otherwise abort the sweep before it began.
+    The thread is a daemon, so it never holds up process exit on a normal finish.
+    """
+    if sys.stdin is None or not sys.stdin.isatty():
+        return
+
+    def _watch():
+        while True:
+            try:
+                line = sys.stdin.readline()
+            except (EOFError, ValueError, OSError):
+                break
+            if line == "":  # EOF, i.e. Ctrl-D
+                break
+            if line.strip().lower() in ("q", "quit", "exit"):
+                break
+        stop_requested.set()
+
+    threading.Thread(target=_watch, daemon=True).start()
 
 
 class Workspace:
@@ -182,6 +209,14 @@ class Workspace:
         result_dir.mkdir(exist_ok=True)
 
 
+        # Let the user stop the sweep early without throwing away results. A
+        # background watcher trips this event on EOF (Ctrl-D) or a "q" line; the
+        # run loop only consults it at benchmark boundaries, so the in-flight
+        # benchmark always finishes across every configuration before we stop,
+        # and the partial results written so far are still postprocessed below.
+        stop_requested = threading.Event()
+        _start_early_exit_watcher(stop_requested)
+
         title = "Running"
         with Progress(
             # TaskProgressColumn(),
@@ -195,7 +230,19 @@ class Workspace:
                 "Running", total=len(configs) * runs * len(pipelines)
             )
 
+            if sys.stdin is not None and sys.stdin.isatty():
+                progress.console.print(
+                    "[dim]Press Ctrl-D (or type 'q' + Enter) to stop early; "
+                    "the current benchmark finishes across all configs first.[/dim]"
+                )
+
             for benchmark, config in configs:
+                if stop_requested.is_set():
+                    progress.console.print(
+                        "[yellow]Early exit requested — writing results from "
+                        "completed benchmarks.[/yellow]"
+                    )
+                    break
                 dir: Path = benchmark.suite.bin / benchmark.name
                 for pipeline in pipelines:
                     for i in range(runs):
@@ -244,10 +291,16 @@ class Workspace:
 
         # Now, split the raw data for each configuration and write them to $metric.$config.csv. This file will just be
         # a single column of the raw data of each run at a given metric.
+        #
+        # A (benchmark, pipeline) pair may have no rows -- the binary never built,
+        # or an early exit stopped the sweep before reaching it. Skip those rather
+        # than writing empty CSVs we'd choke on when merging, so the figures still
+        # build from whatever data was collected.
         for benchmark, config in configs:
             for pipeline in pipelines:
                 df = results[ results['suite'] == benchmark.suite.name].loc[results['benchmark'] == config.name].loc[results['config'] == pipeline.name]
-
+                if df.empty:
+                    continue
 
                 outdir = result_dir / benchmark.suite.name / config.name / pipeline.name
                 outdir.mkdir(exist_ok=True, parents=True)
@@ -257,9 +310,12 @@ class Workspace:
             for metric in metrics:
                 merged = pd.DataFrame()
                 for pipeline in pipelines:
-                    df = pd.read_csv(result_dir / benchmark.suite.name / config.name / pipeline.name / f'{metric}.csv', header=None)
-                    merged[pipeline.name] = df
-                merged.to_csv(result_dir / benchmark.suite.name / config.name / f'{metric}.csv', index=False)
+                    metric_csv = result_dir / benchmark.suite.name / config.name / pipeline.name / f'{metric}.csv'
+                    if not metric_csv.exists():
+                        continue
+                    merged[pipeline.name] = pd.read_csv(metric_csv, header=None)
+                if not merged.empty:
+                    merged.to_csv(result_dir / benchmark.suite.name / config.name / f'{metric}.csv', index=False)
 
 
 
