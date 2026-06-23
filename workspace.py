@@ -10,6 +10,8 @@ import time
 import os
 import sys
 import threading
+import multiprocessing
+import concurrent.futures
 
 from rich.progress import (
     Progress,
@@ -156,27 +158,57 @@ class Workspace:
             runner.title = "extract bitcode"
             runner.run()
 
-    def run_pipeline(self, pipeline):
-        """Run a pipeline over the bitcodes of each benchmark in this workspace"""
+    def run_pipeline(self, pipeline, parallel=True):
+        """Compile every benchmark's IR through `pipeline`.
+
+        Each benchmark is an ordered chain of stage jobs ending in a link. The
+        chains are independent across benchmarks, so we compile them in parallel
+        across all cores -- but the stages WITHIN a benchmark stay sequential (the
+        link must see the transformed bitcode). This is the *build* phase only; the
+        measurement/run phase (see run()) stays strictly serial so a benchmark is
+        never timed while anything else is compiling or running -- no pollution.
+        """
         # Make sure everything is setup!
         self.prepare()
 
         with waterline.utils.cd(self.dir):
-            # Now run the pipeline on every benchmark's IR
-            runner = jobs.JobRunner(f"pipeline: {pipeline.name}")
-
+            # Build one ordered job-chain per benchmark.
+            chains = []
             for suite in self.suites:
                 suite_ir = self.ir_dir / suite.name
                 for benchmark in suite.benchmarks:
                     benchmark_ir_dir = suite_ir / benchmark.name
                     benchmark_ir_input = benchmark_ir_dir / "input.bc"
-
                     output = benchmark_ir_dir / f"{pipeline.name}.bc"
+                    chains.append(list(pipeline.jobs(benchmark_ir_input, output, benchmark)))
 
-                    for job in pipeline.jobs(benchmark_ir_input, output, benchmark):
-                        runner.add(job)
+            def run_chain(chain):
+                for job in chain:
+                    job.run()
 
-            runner.run(parallel=False)
+            with Progress(
+                TimeElapsedColumn(),
+                TextColumn(f"compile: {pipeline.name:20s}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+            ) as progress:
+                task = progress.add_task("compile", total=len(chains))
+                # Threads, not processes: the per-stage work is external tool
+                # invocations (opt / alaska-transform / clang) that release the GIL,
+                # and threads share the workspace without pickling jobs or racing on
+                # the single chdir done above. Each benchmark writes only into its
+                # own IR/bin dir, so concurrent chains never collide.
+                if parallel and len(chains) > 1:
+                    workers = multiprocessing.cpu_count()
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as ex:
+                        futures = [ex.submit(run_chain, c) for c in chains]
+                        for fut in concurrent.futures.as_completed(futures):
+                            fut.result()  # surface any compile error
+                            progress.update(task, advance=1)
+                else:
+                    for chain in chains:
+                        run_chain(chain)
+                        progress.update(task, advance=1)
 
     def run(
         self,
