@@ -36,19 +36,15 @@ class NASBenchmark(Benchmark):
 class NAS(Suite):
     name = "NAS"
 
-    def configure(self, enable_openmp=True, suite_class="B"):
+    def configure(self, enable_openmp=True, suite_class="B", exclude=()):
         self.enable_openmp = enable_openmp
         self.suite_class = suite_class
 
         # this is also hacky
-        self.add_benchmark(NASBenchmark, "bt")
-        self.add_benchmark(NASBenchmark, "sp")
-        self.add_benchmark(NASBenchmark, "lu")
-        self.add_benchmark(NASBenchmark, "mg")
-        self.add_benchmark(NASBenchmark, "ft")
-        self.add_benchmark(NASBenchmark, "is")
-        self.add_benchmark(NASBenchmark, "cg")
-        self.add_benchmark(NASBenchmark, "ep")
+        exclude = set(exclude)
+        for name in ("bt", "sp", "lu", "mg", "ft", "is", "cg", "ep"):
+            if name not in exclude:
+                self.add_benchmark(NASBenchmark, name)
 
     def acquire(self):
         self.workspace.shell(
